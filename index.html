@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Subway Builder</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="lib/maplibre-gl.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="map"></div>
+<canvas id="net"></canvas>
+
+<div id="topbar">
+  <div class="brand"><span class="logo">S</span>SUBWAY BUILDER</div>
+  <div id="cityName" class="city"></div>
+  <div id="clock" class="clock"></div>
+  <div class="speeds" id="speeds">
+    <button data-speed="0" title="Pause (Space)">❚❚</button>
+    <button data-speed="1" title="Normal">▶</button>
+    <button data-speed="2" title="Fast">▶▶</button>
+    <button data-speed="3" title="Faster">▶▶▶</button>
+    <button data-speed="4" title="Fastest">⏩</button>
+  </div>
+  <div class="stat"><label>Funds</label><b id="money"></b></div>
+  <div class="stat"><label>Daily riders</label><b id="riders"></b></div>
+  <div class="stat"><label>Transit share</label><b id="share"></b></div>
+  <div class="stat"><label>Fare</label><span class="fare">$<input id="fare" type="number" step="0.25" min="0" max="10"></span></div>
+  <div class="spacer"></div>
+  <button class="tb" id="btnSave">Save</button>
+  <button class="tb" id="btnMenu">Menu</button>
+  <button class="tb" id="btnHelp">?</button>
+</div>
+
+<div id="toolbar">
+  <div class="gt">Tools</div>
+  <button class="tool" data-tool="select"><span>⬚</span>Select<kbd>1</kbd></button>
+  <button class="tool" data-tool="station"><span>◉</span>Station<kbd>2</kbd></button>
+  <button class="tool" data-tool="track"><span>═</span>Track<kbd>3</kbd></button>
+  <button class="tool" data-tool="route"><span>⟿</span>Route<kbd>4</kbd></button>
+  <button class="tool" data-tool="demolish"><span>✖</span>Demolish<kbd>5</kbd></button>
+  <div class="gt">Construction <span class="keys">↑ ↓</span></div>
+  <div id="buildTypes"></div>
+  <div class="gt">Track shape <span class="keys">T</span></div>
+  <div class="shapes">
+    <button data-shape="straight" title="Straight segments; Shift+click adds a bend">Straight</button>
+    <button data-shape="curve" title="Click the start, a bend point, then the end">Curve</button>
+    <button data-shape="free" title="Bends smoothly out of the previous piece of track">Freeform</button>
+  </div>
+  <button class="ov" data-follow title="Track follows the street network between the points you click">Follow roads<kbd>R</kbd></button>
+  <button class="ov" data-plan title="Place pieces as a costed plan, then press Build">Plan mode<kbd>B</kbd></button>
+  <div class="gt">Map overlay</div>
+  <button class="ov" data-overlay="none">Standard</button>
+  <button class="ov" data-overlay="pop">Population</button>
+  <button class="ov" data-overlay="jobs">Jobs</button>
+  <button class="ov" data-overlay="demand">Commute demand</button>
+  <button class="ov" data-overlay="ridership">Ridership &amp; crowding</button>
+  <button class="ov" data-overlay="transit">Existing transit</button>
+  <div id="legend"></div>
+  <div class="gt">Graphics</div>
+  <button class="ov" data-gfx="satellite">Satellite imagery</button>
+  <button class="ov" data-gfx="terrain">3D terrain</button>
+  <button class="ov" data-gfx="textures">Textured buildings</button>
+</div>
+
+<div id="panel">
+  <div id="info"></div>
+  <div class="tabs" id="tabs">
+    <button data-tab="routes">Routes</button>
+    <button data-tab="stats">Stats</button>
+    <button data-tab="finance">Finance</button>
+    <button data-tab="goals">Goals</button>
+  </div>
+  <div id="panelBody"></div>
+</div>
+
+<div id="planbar"></div>
+<div id="popover" class="hidden"></div>
+<div id="hint"></div>
+<div id="toasts"></div>
+
+<div id="menu" class="overlay">
+  <div class="menu-box">
+    <div class="title"><span class="logo big">S</span><div><h1>SUBWAY BUILDER</h1><p>Design a rapid transit network. Move millions of commuters. Don't go broke.</p></div></div>
+    <div id="cities"></div>
+    <div class="menu-foot"><button id="btnResume" class="primary hidden">Resume game</button></div>
+  </div>
+</div>
+
+<div id="help" class="overlay hidden">
+  <div class="menu-box help">
+    <h2>How to play</h2>
+    <p>The Population and Jobs overlays show where real people live and work. Every weekday the city's real commuters
+      choose between driving, walking and your subway based on total travel time, fare, parking and congestion. Build a network
+      that beats the car.</p>
+    <ul>
+      <li><b>Station (2)</b> — the first click sets the centre, then move the mouse to turn the platform and click again to place it.
+        Right-click cancels. Click existing track to drop a station straight onto it. Click a station to add a transfer platform on another level (↑/↓ picks the level, move to turn it, click to place).
+        Select a station and click its name to rename it, or change its construction,
+        platform length (which limits train length) or turn it.</li>
+      <li><b>Transfers</b> — platforms of one station form a transfer complex: changing costs 1.5 min plus 1 min per level climbed.
+        Stations within walking distance can also be linked as a transfer from the station panel.</li>
+      <li><b>Existing transit overlay</b> — with the Select tool, click a real station or line to add it to your plan. A station on two lines gets a
+        platform on each, lined up with its line; real stations close together become one transfer complex.</li>
+      <li><b>Plan mode (B, on by default)</b> — everything you place is a blue blueprint with a projected cost. Press <b>Build</b> (or Enter) to pay
+        and construct it, or <b>Discard</b>. Turn it off to build instantly.</li>
+      <li><b>Track shape (T)</b> — <b>Straight</b>, <b>Curve</b> (start, bend point, end) or <b>Freeform</b> (bends smoothly out of the last piece).
+        <b>↑ / ↓</b> switch elevation: Deep Bore, Cut &amp; Cover, At-Grade, Elevated.</li>
+      <li><b>Track (3)</b> — lays track only. Click a start (station, track end, open ground, or an existing track to branch off it), then click to add
+        <b>control points</b>; <b>double-click</b> or <b>Enter</b> ends the track, or click a station / track end / track to join it. Corners are
+        rounded automatically into curves of at least 60 m radius, and track leaves a station straight along its platform. Drag control points to
+        reshape any track, Ctrl+click a track to add one, double-click one to delete it. <b>Right-click</b> cancels.</li>
+      <li><b>Branching</b>: with the Track tool, click any point on existing track to put a junction there and branch off it.
+        With the Station tool, click a track to insert a station into it. Trains can't reverse at a junction.</li>
+      <li><b>Follow roads (R)</b>: while laying track, the line follows the street grid between the points you click, rounding corners into curves.</li>
+      <li><b>Water &amp; buildings</b>: At-grade can't cross water. Elevated bridges cost 4×, Cut &amp; Cover immersed tubes 6×, Deep Bore 3×.
+        At-grade, Elevated and Cut &amp; Cover pay to demolish every building in their path (more for taller buildings). Deep Bore goes under them.</li>
+      <li><b>Route (4)</b> — click stations in order along built track. Stations passed on the way are added as stops
+        (<b>Shift+click</b> to run express and skip them). <b>Enter</b> opens the route.</li>
+      <li><b>Demolish (5)</b> — remove unused stations and track. No refunds.</li>
+      <li><b>Construction types</b>: At-grade is cheap but demolition in dense areas costs a fortune; Cut &amp; Cover is a shallow tunnel;
+        Elevated can bridge rivers; Deep Bore goes anywhere, under anything, at a price.</li>
+      <li>Add trains and cars to a route to shorten headways and add capacity. Overcrowded lines (red in the Ridership overlay)
+        lose riders.</li>
+      <li>Revenue comes from fares. Trains, stations and track cost money every day. Issue bonds in the Finance tab if you need cash.</li>
+      <li>Camera: drag to pan, scroll to zoom, <b>right-drag</b> (or Ctrl+drag) to rotate and tilt the 3D view. Pause: Space. Speed: <b>[</b> and <b>]</b>.</li>
+      <li>Demand is real: residents from the 2020 Census and home→work commutes from the Census LODES dataset. The map is OpenStreetMap.</li>
+    </ul>
+    <div class="menu-foot"><button id="btnHelpClose" class="primary">Got it</button></div>
+  </div>
+</div>
+
+<script src="lib/maplibre-gl.js"></script>
+<script src="lib/pmtiles.js"></script>
+<script src="data/cities.js"></script>
+<script src="js/city.js"></script>
+<script src="js/network.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/render.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
