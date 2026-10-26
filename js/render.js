@@ -861,7 +861,7 @@ function pointAlong(g, frac) {
 }
 // where is train i of route r right now? -> [x, y, angle] in world space
 function trainPos(r, geom, i, tSec) {
-  let t = ((tSec + i * r.cycle / r.trains) % r.cycle + r.cycle) % r.cycle;
+  let t = ((tSec + i * r.cycle / r.service[blockOf(Math.floor(G.minute % 1440 / 60))]) % r.cycle + r.cycle) % r.cycle;
   const back = t >= r.half;
   if (back) t -= r.half;
   const L = r.legs.length;
@@ -1017,7 +1017,7 @@ function draw() {
   const tSec = G.minute * 60;
   for (const r of G.routes) {
     const geom = geoms.get(r.id), half = r.cars * 10;
-    for (let i = 0; i < r.trains; i++) {
+    for (let i = 0, n = r.service[blockOf(Math.floor(G.minute % 1440 / 60))]; i < n; i++) {   // trains in service this block
       const [x, y, a, al] = trainPos(r, geom, i, tSec);
       const [px, py] = P(x, y, al);
       if (!onScreen(px, py)) continue;

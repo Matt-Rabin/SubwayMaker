@@ -16,6 +16,12 @@ const MIN_HEADWAY = 90;                                         // s
 const MAX_BEND = 75;                                           // safety limit on any single kink, degrees
 const MAX_THROUGH = 110, JUNCTION_COST = 5e6;                  // sharpest turn through a node (more = reversing), degrees; switch cost
 const START_MONEY = 3e9;
+// service by time of day: each route runs its own number of trains in each block
+const BLOCKS = ['peak', 'day', 'night'];
+const BLOCK_LABEL = { peak: 'Rush hour', day: 'Daytime', night: 'Night' };
+const blockOf = hour => (hour >= 6 && hour < 10) || (hour >= 16 && hour < 19) ? 'peak' : hour >= 22 || hour < 6 ? 'night' : 'day';
+const BLOCK_HOURS = Object.fromEntries(BLOCKS.map(b => [b, [...Array(24).keys()].filter(h => blockOf(h) === b).length]));
+const defaultService = n => ({ peak: n, day: Math.max(1, Math.ceil(n * 0.6)), night: Math.max(1, Math.ceil(n * 0.3)) });
 const LEVELS = ['deep', 'cutcover', 'atgrade', 'elevated'];       // construction types from lowest to highest
 const TRANSFER_MIN = 1.5, TRANSFER_LEVEL = 1;                    // min to change platform in a complex, + per level climbed
 const TRANSFER_LINK = 200;                                       // m: imported stations this close become one complex
@@ -35,7 +41,7 @@ function newGame(data) {
   makeGoals();
   markDirty();
 }
-function blankDay() { return { fares: 0, ops: 0, maint: 0, construction: 0, interest: 0, trains: 0, rewards: 0 }; }
+function blankDay() { return { riders: 0, fares: 0, ops: 0, maint: 0, construction: 0, interest: 0, trains: 0, rewards: 0 }; }
 // G.sMap holds every track node: stations, junctions (switches) and free track ends — only stations are stops
 function reindex() {
   G.sMap = new Map([...G.stations, ...G.nodes].map(s => [s.id, s]));
@@ -555,10 +561,13 @@ function computeRoute(r) {
   r.cycle = 2 * r.half;
   r.length = r.legLen.reduce((a, b) => a + b, 0);
   r.maxTrains = Math.max(1, Math.floor(r.cycle / MIN_HEADWAY));
-  r.trains = Math.min(r.trains, r.maxTrains);
-  r.headway = r.cycle / Math.max(1, r.trains);
-  r.capHour = 3600 / r.headway * r.cars * CAR_CAP;
-  if (!r.crowd || r.crowd.length !== r.legs.length) r.crowd = r.legs.map(() => 1);
+  if (!r.service) r.service = defaultService(r.trains || 1);   // saves from before per-block service
+  for (const b of BLOCKS) r.service[b] = Math.max(1, Math.min(r.maxTrains, r.service[b]));
+  r.trains = Math.max(...BLOCKS.map(b => r.service[b]));        // the fleet: enough trains for the busiest block
+  r.headwayBy = {}; r.capBy = {};
+  for (const b of BLOCKS) { r.headwayBy[b] = r.cycle / r.service[b]; r.capBy[b] = 3600 / r.headwayBy[b] * r.cars * CAR_CAP; }
+  r.headway = r.headwayBy.peak; r.capHour = r.capBy.peak;
+  if (!r.crowdBy || r.crowdBy.peak.length !== r.legs.length) r.crowdBy = Object.fromEntries(BLOCKS.map(b => [b, r.legs.map(() => 1)]));
 }
 
 // ---------- routes
@@ -570,29 +579,34 @@ function createRoute(stops, legs) {
     stops, legs, trains: 0, cars: 6,
   };
   r.cars = Math.min(6, routeMaxCars(r));
+  r.service = defaultService(1);
   computeRoute(r);
-  const want = Math.min(r.maxTrains, Math.max(1, Math.ceil(r.cycle / 360)));   // ~6 min headway
-  const afford = Math.floor(G.money / (r.cars * CAR_COST));
-  if (afford < 1) { toast('Not enough money to buy a train for this route', true); return null; }
+  const want = Math.min(r.maxTrains, Math.max(1, Math.ceil(r.cycle / 360)));   // ~6 min headway at rush hour
+  const n = Math.min(want, Math.floor(G.money / (r.cars * CAR_COST)));
+  if (n < 1) { toast('Not enough money to buy a train for this route', true); return null; }
+  spend(n * r.cars * CAR_COST, 'trains');
+  r.service = defaultService(n);
+  computeRoute(r);
   G.routes.push(r);
-  setTrains(r, Math.min(want, afford));
   markDirty();
-  toast(`Route ${r.name} opened with ${r.trains} trains`);
+  toast(`Route ${r.name} opened: ${r.service.peak} trains at rush hour, ${r.service.day} daytime, ${r.service.night} at night`);
   return r;
 }
 function updateRouteStops(r, stops, legs) {
-  r.stops = stops; r.legs = legs; r.crowd = null;
+  r.stops = stops; r.legs = legs; r.crowdBy = null;
   computeRoute(r);
   markDirty();
 }
-function setTrains(r, n) {
+// trains running in block b; buying or selling (50%) only when the fleet - the busiest block's count - changes
+function setService(r, b, n) {
   n = Math.max(1, Math.min(r.maxTrains, n));
-  const d = n - r.trains;
+  const fleet = Math.max(...BLOCKS.map(k => k === b ? n : r.service[k])), d = fleet - r.trains;
   if (d > 0 && !spend(d * r.cars * CAR_COST, 'trains')) return;
   if (d < 0) G.money += -d * r.cars * CAR_COST * 0.5;
-  r.trains = n;
+  r.service[b] = n;
   computeRoute(r); markDirty();
 }
+const setTrains = (r, n) => setService(r, 'peak', n);
 const routeMaxCars = r => Math.min(10, ...r.stops.map(id => maxCarsAt(ST(id))));   // trains must fit every platform
 function setCars(r, n) {
   n = Math.max(2, Math.min(routeMaxCars(r), n));

@@ -358,27 +358,39 @@ function infoHTML() {
     if (!r) return '';
     const riders = G.res ? G.res.routeRiders.get(r.id) || 0 : 0;
     const peak = r.load ? Math.max(...r.load) : 0;
-    const opex = r.trains * r.cars * CAR_HOUR * 24;
+    const opex = BLOCKS.reduce((s, b) => s + r.service[b] * BLOCK_HOURS[b], 0) * r.cars * CAR_HOUR;
+    const now = blockOf(Math.floor(G.minute % 1440 / 60));
+    const svc = BLOCKS.map(b => { const lb = r.loadBy && r.loadBy[b] ? Math.max(...r.loadBy[b]) : 0; return `<tr class="${b === now ? 'now' : ''}"><td>${BLOCK_LABEL[b]}</td>
+      <td><span class="stepper"><button data-act="svc-" data-arg="${b}">−</button>${r.service[b]}<button data-act="svc+" data-arg="${b}">+</button></span></td>
+      <td>${min(r.headwayBy[b])}</td><td style="color:${loadColor(lb)}">${pctStr(lb)}</td></tr>`; }).join('');
     return `<h3>${bullet(r, true, 'routeStyle')} Route ${esc(r.name)}</h3>
       <div class="swatches"><button class="swatch wheel${ROUTE_COLORS.includes(r.color) ? '' : ' on'}" data-act="colorWheel" data-arg="${r.id}" title="Custom colour"></button>${ROUTE_COLORS.map(c => `<button class="swatch${c === r.color ? ' on' : ''}" style="background:${c}" data-act="color" data-arg="${c}"></button>`).join('')}</div>
+      <table class="svc"><tr><th>Service</th><th>Trains</th><th>Every</th><th>Load</th></tr>${svc}</table>
       <div class="kv" style="margin-top:10px">
-        <span>Trains</span><span class="stepper"><button data-act="trains-">−</button>${r.trains}<button data-act="trains+">+</button></span>
+        <span>Fleet</span><span>${r.trains} trains</span>
         <span>Cars per train</span><span class="stepper"><button data-act="cars-">−</button>${r.cars}<button data-act="cars+">+</button></span>
-        <span>Headway</span><span>${min(r.headway)}</span>
         <span>End-to-end trip</span><span>${min(r.half - TURNAROUND)}</span>
         <span>Length · stops</span><span>${(r.length / 1000).toFixed(1)} km · ${r.stops.length}</span>
-        <span>Capacity / hr / direction</span><span>${fmtInt(r.capHour)}</span>
+        <span>Rush-hour capacity / hr / dir</span><span>${fmtInt(r.capHour)}</span>
         <span>Daily riders</span><span>${fmtInt(riders)}</span>
-        <span>Peak load</span><span style="color:${loadColor(peak)}">${pctStr(peak)}</span>
         <span>Operating cost</span><span>${fmtMoney(opex)}/day</span>
       </div>
-      <p class="note">Each extra train costs ${fmtMoney(r.cars * CAR_COST)}. Max ${r.maxTrains} trains (90 s headway) of up to ${routeMaxCars(r)} cars (shortest platform). Selling refunds 50%.</p>
+      <p class="note">Trains bought cover the busiest block; quieter blocks just run fewer of them (and cost less to run). Each extra train costs ${fmtMoney(r.cars * CAR_COST)}. Max ${r.maxTrains} trains (90 s headway) of up to ${routeMaxCars(r)} cars (shortest platform). Selling refunds 50%.</p>
       <div class="row"><button data-act="editRoute">Edit stops</button><button class="danger" data-act="deleteRoute">Delete route</button><button data-act="desel">Close</button></div>
       <h4>Stops</h4><ol class="stops">${r.stops.map(id => `<li>${ST(id).name}</li>`).join('')}</ol>`;
   }
   return '';
 }
 
+// today's ridership hour by hour: tall at rush hour, the current hour outlined
+function hourlyChart() {
+  const v = PROFILE.map((p, h) => (G.res ? G.res.blocks[blockOf(h)].trips : 0) * p), mx = Math.max(1, ...v), now = Math.floor(G.minute % 1440 / 60);
+  const col = { peak: '#3b82f6', day: '#7aa7e8', night: '#3d4a5e' };
+  return `<svg class="chart" viewBox="0 0 300 90" preserveAspectRatio="none">${v.map((x, h) => {
+    const ht = Math.max(1, x / mx * 78);
+    return `<rect x="${h * 12.5 + 1}" y="${86 - ht}" width="10.5" height="${ht}" fill="${col[blockOf(h)]}"${h === now ? ' stroke="#fff" stroke-width="1.5"' : ''}/>`;
+  }).join('')}</svg><div class="note">Busiest hour ${fmtInt(mx)} riders · now ${fmtInt(v[now])}/hr · today so far ${fmtInt(G.today.riders || 0)}</div>`;
+}
 function chart(vals, color) {
   if (vals.length < 2) return '<svg class="chart"></svg><div class="note">Charts appear after a few in-game days.</div>';
   const mx = Math.max(...vals), mn = Math.min(0, ...vals), rng = mx - mn || 1;
@@ -406,7 +418,7 @@ function bodyHTML() {
       const peak = r.load ? Math.max(...r.load) : 0;
       return `<div class="ritem${UI.sel && UI.sel.id === r.id ? ' on' : ''}" data-act="selRoute" data-arg="${r.id}">${bullet(r)}
         <div class="grow"><b>${ST(r.stops[0]).name} – ${ST(r.stops[r.stops.length - 1]).name}</b>
-        <small>${r.stops.length} stops · ${r.trains} trains · every ${min(r.headway)} · ${fmtInt(riders)}/day</small>
+        <small>${r.stops.length} stops · ${r.service.peak}/${r.service.day}/${r.service.night} trains · every ${min(r.headway)} at rush hour · ${fmtInt(riders)}/day</small>
         <div class="bar"><i style="width:${Math.min(100, peak * 100)}%;background:${loadColor(peak)}"></i></div></div></div>`;
     }).join('') + '</div>';
     return h;
@@ -425,6 +437,7 @@ function bodyHTML() {
         <span>Track built</span><span>${trackKm().toFixed(1)} km</span>
         <span>Trains · cars</span><span>${G.routes.reduce((s, r) => s + r.trains, 0)} · ${totalCars()}</span>
       </div>
+      <h4>Riders by hour</h4>${hourlyChart()}
       <h4>Daily riders</h4>${chart(G.history.map(h => h.trips), '#3b82f6')}
       <h4>Funds</h4>${chart(G.history.map(h => h.money), '#2fbf71')}
       <h4>Busiest stations</h4><table>${top.map(([s, n]) => `<tr><td>${s.name}</td><td>${fmtInt(n)}</td></tr>`).join('') || '<tr><td class="note">No stations yet</td></tr>'}</table>`;
@@ -481,10 +494,15 @@ function refreshUI() {
   $('panel').classList.toggle('collapsed', !UI.panelOpen);
   document.querySelectorAll('[data-gfx]').forEach(b => b.classList.toggle('on', !!GFX[b.dataset.gfx]));
   document.querySelectorAll('[data-follow]').forEach(b => b.classList.toggle('on', UI.followRoads));
-  document.querySelectorAll('[data-plan]').forEach(b => b.classList.toggle('on', UI.plan));
+  UI.plan = true;   // building always goes into the plan
+  document.querySelectorAll('.drop').forEach(d => d.classList.toggle('open', d.querySelector('[data-drop]').dataset.drop === UI.drop));
+  $('dropOverlays').classList.toggle('active', UI.overlay !== 'none');
+  $('dropGraphics').classList.toggle('active', Object.values(GFX).some(Boolean));
+  $('toolopts').classList.toggle('hidden', UI.tool !== 'track' && UI.tool !== 'station');
+  $('toolopts').classList.toggle('track', UI.tool === 'track');
   document.querySelectorAll('[data-shape]').forEach(b => b.classList.toggle('on', b.dataset.shape === UI.shape));
   const n = planItems().length, total = planTotal();
-  const plan = !UI.plan && !n ? '' : `<b>Plan mode${UI.plan ? '' : ' (off)'}</b>
+  const plan = !n ? '' : `<b>Plan</b>
     <span>${n ? `${n} planned piece${n > 1 ? 's' : ''} · projected <b>${fmtMoney(total)}</b>` : 'Place stations and track to see the projected cost'}</span>
     ${total > G.money ? '<span class="bad">Not enough money</span>' : ''}
     ${n ? `<button class="primary" data-act="commitPlan" ${total > G.money ? 'disabled' : ''}>Build ⏎</button><button data-act="discardPlan">Discard</button>` : ''}`;
@@ -524,6 +542,7 @@ function updateTopbar() {
   m.textContent = fmtMoney(G.money);
   m.classList.toggle('neg', G.money < 0);
   $('riders').textContent = G.res ? fmtInt(G.res.trips) : '…';
+  $('ridersNow').textContent = G.res ? fmtInt(ridersNow()) + '/hr' : '…';
   $('share').textContent = G.res ? pctStr(G.res.transit / G.res.total) : '…';
   document.querySelectorAll('[data-speed]').forEach(b => b.classList.toggle('on', +b.dataset.speed === G.speed));
 }
@@ -541,8 +560,8 @@ function doAction(act, arg, el) {
     case 'color': if (r) { r.color = arg; G.version++; } break;
     case 'colorWheel': if (r) openColorWheel(r, el); break;
     case 'routeStyle': if (r) openRouteStyle(r, el); break;
-    case 'trains+': if (r) setTrains(r, r.trains + 1); break;
-    case 'trains-': if (r) setTrains(r, r.trains - 1); break;
+    case 'svc+': if (r) setService(r, arg, r.service[arg] + 1); break;
+    case 'svc-': if (r) setService(r, arg, r.service[arg] - 1); break;
     case 'cars+': if (r) setCars(r, r.cars + 1); break;
     case 'cars-': if (r) setCars(r, r.cars - 1); break;
     case 'editRoute': if (r) startRouteDraft(r); break;
@@ -628,6 +647,7 @@ function openPopover(anchor, html) {
 }
 document.addEventListener('pointerdown', e => {
   if (!$('popover').contains(e.target) && !(popOpener && popOpener.contains(e.target))) closePopover();
+  if (UI.drop && !e.target.closest('#mapctl')) { UI.drop = null; refreshUI(); }
 }, true);
 // colour wheel: hue around, saturation outwards, brightness slider, hex box
 function openColorWheel(r, anchor) {
@@ -712,13 +732,13 @@ document.addEventListener('pointerdown', e => {
   const rn = e.button === 0 && e.target.closest('[data-rename]');
   if (rn) { e.preventDefault(); startRename(rn); return; }
   const b = e.button === 0 && e.target.closest('button, [data-act]');
-  if (!b || b.disabled || !b.closest('#toolbar, #panel, #topbar, #menu, #planbar')) return;
+  if (!b || b.disabled || !b.closest('#toolbar, #toolopts, #mapctl, #panel, #topbar, #menu, #planbar')) return;
   if (b.dataset.tool) setTool(b.dataset.tool);
   else if (b.dataset.build) { UI.build = b.dataset.build; refreshUI(); }
-  else if (b.dataset.overlay) { UI.overlay = b.dataset.overlay; refreshUI(); }
+  else if (b.dataset.drop) { UI.drop = UI.drop === b.dataset.drop ? null : b.dataset.drop; refreshUI(); }
+  else if (b.dataset.overlay) { UI.overlay = b.dataset.overlay; UI.drop = null; refreshUI(); }
   else if (b.dataset.gfx) { setGfx(b.dataset.gfx, !GFX[b.dataset.gfx]); refreshUI(); }
   else if ('follow' in b.dataset) { UI.followRoads = !UI.followRoads; refreshUI(); }
-  else if ('plan' in b.dataset) { UI.plan = !UI.plan; refreshUI(); }
   else if (b.dataset.shape) { UI.shape = b.dataset.shape; UI.curveCtrl = null; refreshUI(); }
   else if (b.dataset.tab) { UI.panelOpen = !(UI.panelOpen && UI.tab === b.dataset.tab); UI.tab = b.dataset.tab; refreshUI(); }   // same tab again folds it
   else if (b.dataset.speed) { G.speed = +b.dataset.speed; }
@@ -789,7 +809,6 @@ window.addEventListener('keydown', e => {
   else if (k === 'Enter' && UI.routeDraft) finishDraft();
   else if (k === 'Enter' && UI.tool === 'track' && UI.from && UI.ctrl.length) { endTrackHere(); refreshUI(); }
   else if (k === 'Enter' && planItems().length) { commitPlan(); refreshUI(); }
-  else if (k === 'b' || k === 'B') { UI.plan = !UI.plan; refreshUI(); }
   else if (k === 't' || k === 'T') { UI.shape = SHAPES[(SHAPES.indexOf(UI.shape) + 1) % SHAPES.length]; UI.curveCtrl = null; refreshUI(); }
   else if (k === 'Backspace') {
     e.preventDefault();

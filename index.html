@@ -23,6 +23,7 @@
     <button data-speed="4" title="Fastest">⏩</button>
   </div>
   <div class="stat"><label>Funds</label><b id="money"></b></div>
+  <div class="stat"><label>Riders now</label><b id="ridersNow"></b></div>
   <div class="stat"><label>Daily riders</label><b id="riders"></b></div>
   <div class="stat"><label>Transit share</label><b id="share"></b></div>
   <div class="stat"><label>Fare</label><span class="fare">$<input id="fare" type="number" step="0.25" min="0" max="10"></span></div>
@@ -32,35 +33,53 @@
   <button class="tb" id="btnHelp">?</button>
 </div>
 
-<div id="toolbar">
-  <div class="gt">Tools</div>
-  <button class="tool" data-tool="select"><span>⬚</span>Select<kbd>1</kbd></button>
-  <button class="tool" data-tool="station"><span>◉</span>Station<kbd>2</kbd></button>
-  <button class="tool" data-tool="track"><span>═</span>Track<kbd>3</kbd></button>
-  <button class="tool" data-tool="route"><span>⟿</span>Route<kbd>4</kbd></button>
-  <button class="tool" data-tool="demolish"><span>✖</span>Demolish<kbd>5</kbd></button>
-  <div class="gt">Construction <span class="keys">↑ ↓</span></div>
-  <div id="buildTypes"></div>
-  <div class="gt">Track shape <span class="keys">T</span></div>
-  <div class="shapes">
-    <button data-shape="straight" title="Straight segments; Shift+click adds a bend">Straight</button>
-    <button data-shape="curve" title="Click the start, a bend point, then the end">Curve</button>
-    <button data-shape="free" title="Bends smoothly out of the previous piece of track">Freeform</button>
+<!-- top left: map overlays and graphics, each an icon that drops down -->
+<div id="mapctl">
+  <div class="drop" id="dropOverlays">
+    <button class="iconbtn" data-drop="overlays" title="Map overlays"><svg viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg></button>
+    <div class="dropmenu">
+      <div class="gt">Map overlay</div>
+      <button class="ov" data-overlay="none">Standard</button>
+      <button class="ov" data-overlay="pop">Population</button>
+      <button class="ov" data-overlay="jobs">Jobs</button>
+      <button class="ov" data-overlay="demand">Commute demand</button>
+      <button class="ov" data-overlay="ridership">Ridership &amp; crowding</button>
+      <button class="ov" data-overlay="transit">Existing transit</button>
+    </div>
   </div>
-  <button class="ov" data-follow title="Track follows the street network between the points you click">Follow roads<kbd>R</kbd></button>
-  <button class="ov" data-plan title="Place pieces as a costed plan, then press Build">Plan mode<kbd>B</kbd></button>
-  <div class="gt">Map overlay</div>
-  <button class="ov" data-overlay="none">Standard</button>
-  <button class="ov" data-overlay="pop">Population</button>
-  <button class="ov" data-overlay="jobs">Jobs</button>
-  <button class="ov" data-overlay="demand">Commute demand</button>
-  <button class="ov" data-overlay="ridership">Ridership &amp; crowding</button>
-  <button class="ov" data-overlay="transit">Existing transit</button>
-  <div id="legend"></div>
-  <div class="gt">Graphics</div>
-  <button class="ov" data-gfx="satellite">Satellite imagery</button>
-  <button class="ov" data-gfx="terrain">3D terrain</button>
-  <button class="ov" data-gfx="textures">Textured buildings</button>
+  <div class="drop" id="dropGraphics">
+    <button class="iconbtn" data-drop="graphics" title="Graphics"><svg viewBox="0 0 24 24"><path d="M2.5 19.5l6.5-9 4.5 5.5 3-4 5 7.5z"/><circle cx="17" cy="6" r="2.2"/></svg></button>
+    <div class="dropmenu">
+      <div class="gt">Graphics</div>
+      <button class="ov" data-gfx="satellite">Satellite imagery</button>
+      <button class="ov" data-gfx="terrain">3D terrain</button>
+      <button class="ov" data-gfx="textures">Textured buildings</button>
+    </div>
+  </div>
+</div>
+<div id="legend"></div>
+
+<!-- bottom: the five tools, with the active tool's options, the hint and the plan stacked above -->
+<div id="toolbar">
+  <button class="tool" data-tool="select" title="Select (1)"><svg viewBox="0 0 24 24"><path d="M5 3l6.5 17 2.2-6.8L20.5 11z"/></svg><kbd>1</kbd></button>
+  <button class="tool" data-tool="station" title="Station (2)"><svg viewBox="0 0 24 24"><rect x="2.5" y="8" width="19" height="8" rx="4"/><path d="M7 12h10"/></svg><kbd>2</kbd></button>
+  <button class="tool" data-tool="track" title="Track (3)"><svg viewBox="0 0 24 24"><path d="M8 3v18M16 3v18M8 7h8M8 12h8M8 17h8"/></svg><kbd>3</kbd></button>
+  <button class="tool" data-tool="route" title="Route (4)"><svg viewBox="0 0 24 24"><path d="M3 12h18"/><circle cx="6" cy="12" r="2.4" class="fill"/><circle cx="12" cy="12" r="2.4" class="fill"/><circle cx="18" cy="12" r="2.4" class="fill"/></svg><kbd>4</kbd></button>
+  <button class="tool" data-tool="demolish" title="Demolish (5)"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5.5 7l1 13h11l1-13M9 7V4h6v3"/></svg><kbd>5</kbd></button>
+</div>
+<div id="bottomstack">
+  <div id="toolopts" class="hidden">
+    <div id="buildTypes" title="Construction level (↑ / ↓)"></div>
+    <div class="trackonly sep"></div>
+    <div class="trackonly shapes">
+      <button class="iconbtn" data-shape="straight" title="Straight (T cycles shapes)"><svg viewBox="0 0 24 24"><path d="M4 20L20 4"/></svg></button>
+      <button class="iconbtn" data-shape="curve" title="Curve: start, bend point, end (T)"><svg viewBox="0 0 24 24"><path d="M4 20Q4 4 20 4"/></svg></button>
+      <button class="iconbtn" data-shape="free" title="Freeform: bends smoothly out of the last piece (T)"><svg viewBox="0 0 24 24"><path d="M18 4C6 4 6 12 12 12s6 8-6 8"/></svg></button>
+      <button class="iconbtn" data-follow title="Follow roads (R)"><svg viewBox="0 0 24 24"><path d="M6 3v9a6 6 0 0012 0V3"/><path d="M6 7h4V3M14 3v4h4"/></svg></button>
+    </div>
+  </div>
+  <div id="hint"></div>
+  <div id="planbar"></div>
 </div>
 
 <div id="panel">
@@ -74,9 +93,7 @@
   <div id="panelBody"></div>
 </div>
 
-<div id="planbar"></div>
 <div id="popover" class="hidden"></div>
-<div id="hint"></div>
 <div id="toasts"></div>
 
 <div id="menu" class="overlay">
@@ -102,8 +119,8 @@
         Stations within walking distance can also be linked as a transfer from the station panel.</li>
       <li><b>Existing transit overlay</b> — with the Select tool, click a real station or line to add it to your plan. A station on two lines gets a
         platform on each, lined up with its line; real stations close together become one transfer complex.</li>
-      <li><b>Plan mode (B, on by default)</b> — everything you place is a blue blueprint with a projected cost. Press <b>Build</b> (or Enter) to pay
-        and construct it, or <b>Discard</b>. Turn it off to build instantly.</li>
+      <li><b>Plans</b> — everything you build is placed as a blue blueprint with a projected cost. Press <b>Build</b> (or Enter) to pay
+        and construct it, or <b>Discard</b>.</li>
       <li><b>Track shape (T)</b> — <b>Straight</b>, <b>Curve</b> (start, bend point, end) or <b>Freeform</b> (bends smoothly out of the last piece).
         <b>↑ / ↓</b> switch elevation: Deep Bore, Cut &amp; Cover, At-Grade, Elevated.</li>
       <li><b>Track (3)</b> — lays track only. Click a start (station, track end, open ground, or an existing track to branch off it), then click to add

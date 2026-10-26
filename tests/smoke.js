@@ -25,6 +25,16 @@ vm.runInContext(`
   runAssignment();
   console.log('  ', ids.length, 'stations,', r.trains, 'trains; riders/day', Math.round(G.res.trips), 'share', (G.res.transit / G.res.total * 100).toFixed(2) + '%; assign', Math.round(performance.now() - t), 'ms');
   if (!(G.res.trips > 1000)) throw new Error('no riders');
+  // --- time of day: fewer trains at night means fewer riders then; the fleet covers the busiest block
+  const blk = G.res.blocks;
+  if (!(blk.peak.trips > blk.night.trips)) throw new Error('night service should carry fewer riders than rush hour');
+  const fleet0 = r.trains, m0t = G.money;
+  setService(r, 'night', r.service.night + 1);
+  if (r.trains !== fleet0 || G.money !== m0t) throw new Error('night trains within the fleet should cost nothing to add');
+  setService(r, 'day', r.trains + 1);
+  if (r.trains !== fleet0 + 1 || !(G.money < m0t)) throw new Error('exceeding the fleet should buy a train');
+  if (!(runningCars('night') < runningCars('peak') || r.service.night >= r.service.peak)) throw new Error('night opex not lower');
+  console.log('   time of day ok: rush', Math.round(blk.peak.trips), '/ day', Math.round(blk.day.trips), '/ night', Math.round(blk.night.trips), 'daily-equivalent trips');
   // --- branching: split track A-B mid-span into a junction, branch off it to D
   const nd = (dx, dy) => { const s = buildStation(cx + dx, cy + dy + 6000, 'deep'); if (!s) throw new Error('station failed'); return s; };
   const A = nd(0, 0), B = nd(2000, 0), Cn = nd(4000, 0), D = nd(2000, 900);

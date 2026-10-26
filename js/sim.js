@@ -75,13 +75,16 @@ function dijkstra(src, N, off, eTo, eW, dist, pred, heap) {
   }
 }
 
+// when people travel: each block's share of the day's trips, and its busiest hour (sets how crowded trains get)
+const BLOCK_W = Object.fromEntries(BLOCKS.map(b => [b, PROFILE.reduce((s, p, h) => s + (blockOf(h) === b ? p : 0), 0)]));
+const BLOCK_PEAKHR = Object.fromEntries(BLOCKS.map(b => [b, Math.max(...PROFILE.filter((_, h) => blockOf(h) === b))]));
+const BLOCK_ITERS = { peak: 3, day: 2, night: 1 };   // crowding rarely binds off-peak
+
+// Each block is assigned on its own timetable (waits, capacity, crowding); daily totals weight the blocks by when
+// people travel, so cutting night service loses night riders but not rush-hour ones.
 function runAssignment() {
   const C = G.city, st = builtStations(), S = st.length, groups = C.groups;
   const routes = G.routes;
-  const res = {
-    trips: 0, transit: 0, car: 0, walk: 0, total: 0,
-    stationUse: new Map(), routeRiders: new Map(), flows: [], served: 0, transfers: new Map(), complexTransfers: new Map(),
-  };
   // access candidates
   // stations bucketed into ACCESS_R cells so each lookup checks only 3x3 buckets
   const buckets = new Map(), bk = (i, j) => i * 100003 + j;
@@ -99,8 +102,6 @@ function runAssignment() {
   if (routes.length && (candCache.key !== candKey || candCache.groups !== groups)) candCache = { key: candKey, groups, cand: groups.map(g => [near(g.hx, g.hy), near(g.wx, g.wy)]) };
   const cand = routes.length ? candCache.cand : null;
   const sIdx = new Map(st.map((s, i) => [s.id, i]));
-  let lastFlow = null, boards = null, alights = null, routeBoard = null, xfer = null;
-  const share = new Float32Array(groups.length), choice = new Int32Array(groups.length * 2).fill(-1);
 
   // changing between platforms: inside a transfer complex it's stairs and passages (kind 4: TRANSFER_MIN + a minute
   // per level climbed); otherwise walking along the street to a station within 400 m (kind 3). Same every iteration.
@@ -114,98 +115,114 @@ function runAssignment() {
     const d = Math.hypot(st[i].x - st[j].x, st[i].y - st[j].y);
     if (d < 400) { const w = d / WALK_MPM * 1.5 + 1; walkE.push([i, j, w, 3, -1, -1, 0, -1], [j, i, w, 3, -1, -1, 0, -1]); }
   }
-  const iters = routes.length ? 3 : 1;
-  for (let it = 0; it < iters; it++) {
-    // --- build graph: nodes 0..S-1 = street level, then one platform per route stop
-    const E = [];   // [from, to, w, kind, route, leg, dir, station]
-    let N = S;
-    routes.forEach((r, ri) => {
-      r._base = N; N += r.stops.length;
-      const wait = r.headway / 60 / 2;
-      r.stops.forEach((sid, k) => {
-        const s = sIdx.get(sid), p = r._base + k;
-        E.push([s, p, 2 + 1.5 * wait, 0, ri, -1, 0, s], [p, s, 0.3, 1, ri, -1, 0, s]);
-        if (k < r.stops.length - 1) {
-          const w = r.legTime[k] / 60 * r.crowd[k] + DWELL / 60;
-          E.push([p, p + 1, w, 2, ri, k, 0, -1], [p + 1, p, w, 2, ri, k, 1, -1]);
-        }
+
+  const runBlock = blk => {
+    let boards = null, alights = null, routeBoard = null, xfer = null;
+    const share = new Float32Array(groups.length), choice = new Int32Array(groups.length * 2).fill(-1);
+    const iters = routes.length ? BLOCK_ITERS[blk] : 1;
+    for (let it = 0; it < iters; it++) {
+      // --- build graph: nodes 0..S-1 = street level, then one platform per route stop
+      const E = [];   // [from, to, w, kind, route, leg, dir, station]
+      let N = S;
+      routes.forEach((r, ri) => {
+        r._base = N; N += r.stops.length;
+        const wait = r.headwayBy[blk] / 60 / 2, crowd = r.crowdBy[blk];
+        r.stops.forEach((sid, k) => {
+          const s = sIdx.get(sid), p = r._base + k;
+          E.push([s, p, 2 + 1.5 * wait, 0, ri, -1, 0, s], [p, s, 0.3, 1, ri, -1, 0, s]);
+          if (k < r.stops.length - 1) {
+            const w = r.legTime[k] / 60 * crowd[k] + DWELL / 60;
+            E.push([p, p + 1, w, 2, ri, k, 0, -1], [p + 1, p, w, 2, ri, k, 1, -1]);
+          }
+        });
       });
-    });
-    E.push(...walkE);
-    E.sort((a, b) => a[0] - b[0]);
-    const M = E.length, off = new Int32Array(N + 1), eTo = new Int32Array(M), eFrom = new Int32Array(M), eW = new Float64Array(M);
-    for (let e = 0; e < M; e++) { off[E[e][0] + 1]++; eTo[e] = E[e][1]; eFrom[e] = E[e][0]; eW[e] = E[e][2]; }
-    for (let n = 0; n < N; n++) off[n + 1] += off[n];
+      E.push(...walkE);
+      E.sort((a, b) => a[0] - b[0]);
+      const M = E.length, off = new Int32Array(N + 1), eTo = new Int32Array(M), eFrom = new Int32Array(M), eW = new Float64Array(M);
+      for (let e = 0; e < M; e++) { off[E[e][0] + 1]++; eTo[e] = E[e][1]; eFrom[e] = E[e][0]; eW[e] = E[e][2]; }
+      for (let n = 0; n < N; n++) off[n + 1] += off[n];
 
-    // --- all-pairs from each station
-    const T = new Float64Array(S * S), P = new Int32Array(S * N);
-    const dist = new Float64Array(N), pred = new Int32Array(N), heap = new Float64Array(M * 2 + 4);
-    for (let s = 0; s < S; s++) {
-      dijkstra(s, N, off, eTo, eW, dist, pred, heap);
-      for (let d = 0; d < S; d++) T[s * S + d] = dist[d];
-      P.set(pred, s * N);
-    }
+      // --- all-pairs from each station
+      const T = new Float64Array(S * S), P = new Int32Array(S * N);
+      const dist = new Float64Array(N), pred = new Int32Array(N), heap = new Float64Array(M * 2 + 4);
+      for (let s = 0; s < S; s++) {
+        dijkstra(s, N, off, eTo, eW, dist, pred, heap);
+        for (let d = 0; d < S; d++) T[s * S + d] = dist[d];
+        P.set(pred, s * N);
+      }
 
-    // --- mode choice + loading
-    const flow = routes.map(r => r.legs.map(() => [0, 0]));
-    boards = new Float64Array(S); alights = new Float64Array(S); routeBoard = new Float64Array(routes.length); xfer = new Float64Array(S);
-    for (let gi = 0; gi < groups.length; gi++) {
-      const g = groups[gi];
-      let best = Infinity, bo = -1, bd = -1;
-      if (cand) {
-        const [oc, dc] = cand[gi];
-        for (let a = 0; a < oc.length; a += 2) {
-          const row = oc[a] * S, wo = 1.5 * oc[a + 1];
-          for (let b = 0; b < dc.length; b += 2) {
-            if (oc[a] === dc[b]) continue;
-            const c = wo + T[row + dc[b]] + 1.5 * dc[b + 1];
-            if (c < best) { best = c; bo = oc[a]; bd = dc[b]; }
+      // --- mode choice + loading
+      const flow = routes.map(r => r.legs.map(() => [0, 0]));
+      boards = new Float64Array(S); alights = new Float64Array(S); routeBoard = new Float64Array(routes.length); xfer = new Float64Array(S);
+      for (let gi = 0; gi < groups.length; gi++) {
+        const g = groups[gi];
+        let best = Infinity, bo = -1, bd = -1;
+        if (cand) {
+          const [oc, dc] = cand[gi];
+          for (let a = 0; a < oc.length; a += 2) {
+            const row = oc[a] * S, wo = 1.5 * oc[a + 1];
+            for (let b = 0; b < dc.length; b += 2) {
+              if (oc[a] === dc[b]) continue;
+              const c = wo + T[row + dc[b]] + 1.5 * dc[b + 1];
+              if (c < best) { best = c; bo = oc[a]; bd = dc[b]; }
+            }
           }
         }
+        const tg = best + G.fare / VOT;
+        const m = Math.min(g.car, g.walk, tg);
+        const ec = Math.exp(-BETA * (g.car - m)), ew = Math.exp(-BETA * (g.walk - m)), et = Math.exp(-BETA * (tg - m));
+        const pt = et / (ec + ew + et);
+        share[gi] = pt;
+        choice[gi * 2] = bo; choice[gi * 2 + 1] = bd;
+        if (!(pt > 1e-4)) { share[gi] = 0; continue; }
+        const f = g.size * pt, base = bo * N;
+        for (let n = bd; n !== bo;) {
+          const e = P[base + n];
+          if (e < 0) break;
+          const ed = E[e];
+          if (ed[3] === 2) flow[ed[4]][ed[5]][ed[6]] += f;
+          else if (ed[3] === 0) { boards[ed[7]] += f; routeBoard[ed[4]] += f; }
+          else if (ed[3] === 1) alights[ed[7]] += f;
+          else if (ed[3] === 4) { xfer[ed[0]] += f; xfer[ed[1]] += f; }
+          n = eFrom[e];
+        }
       }
-      const tg = best + G.fare / VOT;
-      const m = Math.min(g.car, g.walk, tg);
-      const ec = Math.exp(-BETA * (g.car - m)), ew = Math.exp(-BETA * (g.walk - m)), et = Math.exp(-BETA * (tg - m));
-      const pt = et / (ec + ew + et);
-      share[gi] = pt;
-      choice[gi * 2] = bo; choice[gi * 2 + 1] = bd;
-      if (!(pt > 1e-4)) { share[gi] = 0; continue; }
-      const f = g.size * pt, base = bo * N;
-      for (let n = bd; n !== bo;) {
-        const e = P[base + n];
-        if (e < 0) break;
-        const ed = E[e];
-        if (ed[3] === 2) flow[ed[4]][ed[5]][ed[6]] += f;
-        else if (ed[3] === 0) { boards[ed[7]] += f; routeBoard[ed[4]] += f; }
-        else if (ed[3] === 1) alights[ed[7]] += f;
-        else if (ed[3] === 4) { xfer[ed[0]] += f; xfer[ed[1]] += f; }
-        n = eFrom[e];
-      }
+      // --- crowding feedback: this block's busiest hour against this block's capacity
+      const hr = PEAK * BLOCK_PEAKHR[blk] / BLOCK_PEAKHR.peak;
+      routes.forEach((r, ri) => {
+        (r.loadBy = r.loadBy || {})[blk] = flow[ri].map(([a, b]) => Math.max(a, b) * hr / r.capBy[blk]);
+        (r.legFlowBy = r.legFlowBy || {})[blk] = flow[ri].map(([a, b]) => a + b);
+        r.crowdBy[blk] = r.loadBy[blk].map((c, k) => it === 0 ? crowdMult(c) : 0.5 * (r.crowdBy[blk][k] + crowdMult(c)));
+      });
     }
-    // --- crowding feedback
-    routes.forEach((r, ri) => {
-      r.load = flow[ri].map(([a, b]) => Math.max(a, b) * PEAK / r.capHour);
-      r.legFlow = flow[ri].map(([a, b]) => a + b);
-      r.crowd = r.load.map((c, k) => it === 0 ? crowdMult(c) : 0.5 * (r.crowd[k] + crowdMult(c)));
+    let transit = 0, car = 0, walk = 0;
+    groups.forEach((g, gi) => {
+      const pt = share[gi], m = Math.min(g.car, g.walk);
+      const ec = Math.exp(-BETA * (g.car - m)), ew = Math.exp(-BETA * (g.walk - m));
+      transit += g.size * pt; car += g.size * (1 - pt) * ec / (ec + ew); walk += g.size * (1 - pt) * ew / (ec + ew);
     });
-    lastFlow = flow;
-  }
+    return { share, choice, boards, alights, routeBoard, xfer, transit, car, walk, trips: transit * 2 };
+  };
+  const one = routes.length ? null : runBlock('peak');   // no routes: every block looks the same
+  const per = Object.fromEntries(BLOCKS.map(b => [b, one || runBlock(b)]));
+  const W = BLOCK_W, wsum = f => BLOCKS.reduce((s, b) => s + W[b] * f(per[b]), 0);
 
-  // --- results
+  // --- results: daily = blocks weighted by when people travel; rush hour drives the maps and crowding panels
+  const res = {
+    trips: 0, transit: wsum(p => p.transit), car: wsum(p => p.car), walk: wsum(p => p.walk), total: 0,
+    blocks: Object.fromEntries(BLOCKS.map(b => [b, { trips: per[b].trips, share: 0 }])),
+    stationUse: new Map(), routeRiders: new Map(), flows: [], served: 0, transfers: new Map(), complexTransfers: new Map(),
+  };
+  const pk = per.peak;
   const ZW = Math.ceil(C.W / 2000), ZH = Math.ceil(C.H / 2000);
   const zone = (x, y) => Math.min(ZW - 1, Math.max(0, Math.floor(x / 2000))) + ZW * Math.min(ZH - 1, Math.max(0, Math.floor(y / 2000)));
   const zf = new Map();
   groups.forEach((g, gi) => {
-    const pt = share[gi];
-    const m = Math.min(g.car, g.walk);
-    const ec = Math.exp(-BETA * (g.car - m)), ew = Math.exp(-BETA * (g.walk - m));
-    res.transit += g.size * pt;
-    res.car += g.size * (1 - pt) * ec / (ec + ew);
-    res.walk += g.size * (1 - pt) * ew / (ec + ew);
+    const pt = BLOCKS.reduce((s, b) => s + W[b] * per[b].share[gi], 0);
     res.total += g.size;
-    if (choice[gi * 2] >= 0) res.served += g.size;
-    g.o = choice[gi * 2] >= 0 ? st[choice[gi * 2]].id : -1;
-    g.d = choice[gi * 2 + 1] >= 0 ? st[choice[gi * 2 + 1]].id : -1;
+    if (pk.choice[gi * 2] >= 0) res.served += g.size;
+    g.o = pk.choice[gi * 2] >= 0 ? st[pk.choice[gi * 2]].id : -1;
+    g.d = pk.choice[gi * 2 + 1] >= 0 ? st[pk.choice[gi * 2 + 1]].id : -1;
     g.pt = pt;
     const z1 = zone(g.hx, g.hy), z2 = zone(g.wx, g.wy);
     if (z1 === z2) return;
@@ -214,38 +231,47 @@ function runAssignment() {
     zf.set(k, v);
   });
   res.trips = res.transit * 2;
+  for (const b of BLOCKS) res.blocks[b].share = per[b].transit / (res.total || 1);
   res.flows = [...zf.entries()].sort((a, b) => b[1][0] - a[1][0]).slice(0, 160).map(([k, v]) => {
     const z1 = Math.floor(k / (ZW * ZH)), z2 = k % (ZW * ZH);
     return { x1: (z1 % ZW + 0.5) * 2000, y1: (Math.floor(z1 / ZW) + 0.5) * 2000, x2: (z2 % ZW + 0.5) * 2000, y2: (Math.floor(z2 / ZW) + 0.5) * 2000, n: v[0], t: v[1] };
   });
-  st.forEach((s, i) => res.stationUse.set(s.id, boards ? boards[i] + alights[i] : 0));
+  st.forEach((s, i) => res.stationUse.set(s.id, pk.boards ? wsum(p => p.boards[i] + p.alights[i]) : 0));
   // transfers per day (each commuter changes on the way out and back): per platform, and per complex
   st.forEach((s, i) => {
-    if (!xfer) return;
-    res.transfers.set(s.id, xfer[i] * 2);
-    if (s.complex) res.complexTransfers.set(s.complex, (res.complexTransfers.get(s.complex) || 0) + xfer[i]);
+    if (!pk.xfer) return;
+    const x = wsum(p => p.xfer[i]);
+    res.transfers.set(s.id, x * 2);
+    if (s.complex) res.complexTransfers.set(s.complex, (res.complexTransfers.get(s.complex) || 0) + x);
   });
-  routes.forEach((r, ri) => res.routeRiders.set(r.id, routeBoard ? routeBoard[ri] * 2 : 0));
+  routes.forEach((r, ri) => {
+    res.routeRiders.set(r.id, pk.routeBoard ? wsum(p => p.routeBoard[ri]) * 2 : 0);
+    r.load = r.loadBy ? r.loadBy.peak : null; r.legFlow = r.legFlowBy ? r.legFlowBy.peak : null;
+  });
   G.res = res;
 }
+// riders per hour right now
+const ridersNow = () => G.res ? G.res.blocks[blockOf(Math.floor(G.minute % 1440 / 60))].trips * PROFILE[Math.floor(G.minute % 1440 / 60)] : 0;
 
 // ---------- clock & money
 function totalCars() { return G.routes.reduce((s, r) => s + r.trains * r.cars, 0); }
 function trackKm() { return G.tracks.reduce((s, t) => s + (t.planned ? 0 : t.len), 0) / 1000; }
-function dailyOpex() { return totalCars() * CAR_HOUR * 24 + builtStations().length * ST_MAINT + trackKm() * TR_MAINT_KM; }
+const runningCars = blk => G.routes.reduce((s, r) => s + r.service[blk] * r.cars, 0);   // trains in service in a block
+function dailyOpex() { return BLOCKS.reduce((s, b) => s + runningCars(b) * BLOCK_HOURS[b], 0) * CAR_HOUR + builtStations().length * ST_MAINT + trackKm() * TR_MAINT_KM; }
 
 function tick(dtReal) {
   if (assignDirty && performance.now() >= assignAt) { assignDirty = false; runAssignment(); }
   let dm = dtReal * SPEEDS[G.speed];
-  const trips = G.res ? G.res.trips : 0;
-  const opsPerMin = totalCars() * CAR_HOUR / 60;
   const maintPerMin = (builtStations().length * ST_MAINT + trackKm() * TR_MAINT_KM) / 1440;
   while (dm > 1e-9) {
     const intoDay = G.minute % 1440;
     const step = Math.min(dm, 60 - intoDay % 60, 1440 - intoDay);
-    const hour = Math.floor(intoDay / 60);
-    const fares = trips * PROFILE[hour] / 60 * step * G.fare;
+    const hour = Math.floor(intoDay / 60), blk = blockOf(hour);
+    // riders and fares follow the hour; running costs follow the trains in service this block
+    const riders = (G.res ? G.res.blocks[blk].trips : 0) * PROFILE[hour] / 60 * step, fares = riders * G.fare;
+    const opsPerMin = runningCars(blk) * CAR_HOUR / 60;
     G.money += fares - (opsPerMin + maintPerMin) * step;
+    G.today.riders = (G.today.riders || 0) + riders;
     G.today.fares += fares; G.today.ops += opsPerMin * step; G.today.maint += maintPerMin * step;
     const day = Math.floor(G.minute / 1440 + 1e-9);
     G.minute += step; dm -= step;
@@ -289,7 +315,7 @@ function repayBond(i) {
 const dayNum = () => Math.floor(G.minute / 1440) + 1;
 function clockStr() {
   const d = dayNum(), m = Math.floor(G.minute % 1440);
-  return `${DAYS[(d - 1) % 7]} · Day ${d} · ${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  return `${DAYS[(d - 1) % 7]} · Day ${d} · ${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')} · ${BLOCK_LABEL[blockOf(Math.floor(m / 60))]}`;
 }
 
 // ---------- goals (ridership targets scale with the city's real commuter count)
@@ -329,7 +355,7 @@ function saveGame(auto) {
   const data = {
     v: 1, cityId: G.cityId, stations: G.stations, nodes: G.nodes, tracks: G.tracks, nextId: G.nextId, money: G.money, minute: G.minute,
     fare: G.fare, cam: map ? camState() : null, bonds: G.bonds, history: G.history, goals: G.goals, today: G.today, lastDay: G.lastDay,
-    routes: G.routes.map(r => ({ id: r.id, name: r.name, color: r.color, shape: r.shape, stops: r.stops, legs: r.legs, trains: r.trains, cars: r.cars })),
+    routes: G.routes.map(r => ({ id: r.id, name: r.name, color: r.color, shape: r.shape, stops: r.stops, legs: r.legs, trains: r.trains, service: r.service, cars: r.cars })),
   };
   try {
     localStorage.setItem('subwaybuilder2:' + G.cityId, JSON.stringify(data));
